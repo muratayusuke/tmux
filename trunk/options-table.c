@@ -404,6 +404,10 @@ const struct options_table_entry session_options_table[] = {
 	  .type = OPTIONS_TABLE_FLAG,
 	  .default_num = 0
 	},
+	{ .name = "automatic-renumber-windows",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .default_num = 0
+	},
 
 	{ .name = NULL }
 };
