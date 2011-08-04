@@ -1087,3 +1087,30 @@ window_pane_find_right(struct window_pane *wp)
 	}
 	return (NULL);
 }
+
+/* Renumber the windows across winlinks attached to a specific session. */
+int
+window_renumber_windows(struct session *s)
+{
+	struct winlink	*wl;
+	int		 new_idx;
+
+	if (s == NULL)
+		return (-1);
+
+	/* Start renumbering from the base-index if it's set. */
+	new_idx = options_get_number(&s->options, "base-index");
+
+	/* Go through the winlinks and assign new indexes. */
+	RB_FOREACH(wl, winlinks, &s->windows) {
+		/* This clashes with a window already with that id, so skip
+		 * it.
+		 */
+		if (wl->idx == new_idx) {
+			new_idx++;
+			continue;
+		}
+		wl->idx = new_idx++;
+	}
+	return (0);
+}
