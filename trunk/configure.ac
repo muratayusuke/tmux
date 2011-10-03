@@ -168,9 +168,6 @@ AC_SEARCH_LIBS(inet_ntoa, nsl)
 AC_SEARCH_LIBS(socket, socket)
 AC_CHECK_LIB(xnet, socket)
 
-# Look for sqrt.
-AC_SEARCH_LIBS(sqrt, m)
-
 # Check for CMSG_DATA. Some platforms require _XOPEN_SOURCE_EXTENDED (for
 # example see xopen_networking(7) on HP-UX).
 XOPEN_DEFINES=
@@ -331,6 +328,7 @@ AM_CONDITIONAL(NO_GETOPT, [test "x$found_getopt" = xno])
 AC_CHECK_FUNCS(
 	[ \
 		bzero \
+		dirfd \
 		setproctitle \
 		sysconf \
 	]
@@ -404,15 +402,6 @@ else
 	AC_MSG_RESULT(no)
 fi
 
-# Look for /proc/$$/fd.
-AC_MSG_CHECKING(for /proc/\$\$/fd)
-if test -d /proc/$$/fd; then
-	AC_DEFINE(HAVE_DIRFD)
-	AC_MSG_RESULT(yes)
-else
-	AC_MSG_RESULT(no)
-fi
-
 # Figure out the platform for osdep-*.c and forkpty-*.c.
 AC_MSG_CHECKING(platform)
 case "$host_os" in
@@ -425,11 +414,15 @@ case "$host_os" in
 		AC_DEFINE(BROKEN_CMSG_FIRSTHDR)
 		PLATFORM=darwin
 		;;
+	*dragonfly*)
+		AC_MSG_RESULT(dragonfly)
+		PLATFORM=dragonfly
+		;;
 	*linux*)
 		AC_MSG_RESULT(linux)
 		PLATFORM=linux
 		;;
-	*freebsd*|*dragonfly*)
+	*freebsd*)
 		AC_MSG_RESULT(freebsd)
 		PLATFORM=freebsd
 		;;
@@ -461,6 +454,7 @@ esac
 AC_SUBST(PLATFORM)
 AM_CONDITIONAL(IS_AIX, test "x$PLATFORM" = xaix)
 AM_CONDITIONAL(IS_DARWIN, test "x$PLATFORM" = xdarwin)
+AM_CONDITIONAL(IS_DRAGONFLY, test "x$PLATFORM" = xdragonfly)
 AM_CONDITIONAL(IS_LINUX, test "x$PLATFORM" = xlinux)
 AM_CONDITIONAL(IS_FREEBSD, test "x$PLATFORM" = xfreebsd)
 AM_CONDITIONAL(IS_NETBSD, test "x$PLATFORM" = xnetbsd)
