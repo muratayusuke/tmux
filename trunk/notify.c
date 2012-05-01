@@ -1,7 +1,7 @@
 /* $Id$ */
 
 /*
- * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
+ * Copyright (c) 2012 George Nachman <tmux@georgester.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,42 +16,44 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/types.h>
-
-#include <stdlib.h>
-
 #include "tmux.h"
 
-/*
- * Rename a window.
- */
-
-int	cmd_rename_window_exec(struct cmd *, struct cmd_ctx *);
-
-const struct cmd_entry cmd_rename_window_entry = {
-	"rename-window", "renamew",
-	"t:", 1, 1,
-	CMD_TARGET_WINDOW_USAGE " new-name",
-	0,
-	NULL,
-	NULL,
-	cmd_rename_window_exec
-};
-
-int
-cmd_rename_window_exec(struct cmd *self, struct cmd_ctx *ctx)
+void
+notify_window_layout_changed(unused struct window *w)
 {
-	struct args	*args = self->args;
-	struct session	*s;
-	struct winlink	*wl;
+}
 
-	if ((wl = cmd_find_window(ctx, args_get(args, 't'), &s)) == NULL)
-		return (-1);
+void
+notify_window_unlinked(unused struct session *s, unused struct window *w)
+{
+}
 
-	window_set_name(wl->window, args->argv[0]);
-	options_set_number(&wl->window->options, "automatic-rename", 0);
+void
+notify_window_linked(unused struct session *s, unused struct window *w)
+{
+}
 
-	server_status_window(wl->window);
+void
+notify_window_renamed(unused struct window *w)
+{
+}
 
-	return (0);
+void
+notify_attached_session_changed(unused struct client *c)
+{
+}
+
+void
+notify_session_renamed(unused struct session *s)
+{
+}
+
+void
+notify_session_created(unused struct session *s)
+{
+}
+
+void
+notify_session_closed(unused struct session *s)
+{
 }

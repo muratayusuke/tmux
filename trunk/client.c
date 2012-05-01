@@ -17,6 +17,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -34,11 +35,21 @@
 
 struct imsgbuf	client_ibuf;
 struct event	client_event;
-const char     *client_exitmsg;
+enum {
+	CLIENT_EXIT_NONE,
+	CLIENT_EXIT_DETACHED,
+	CLIENT_EXIT_DETACHED_HUP,
+	CLIENT_EXIT_LOST_TTY,
+	CLIENT_EXIT_TERMINATED,
+	CLIENT_EXIT_LOST_SERVER,
+	CLIENT_EXIT_EXITED,
+	CLIENT_EXIT_SERVER_EXITED,
+} client_exitreason = CLIENT_EXIT_NONE;
 int		client_exitval;
 enum msgtype	client_exittype;
 int		client_attached;
 
+int		client_get_lock(char *);
 int		client_connect(char *, int);
 void		client_send_identify(int);
 void		client_send_environ(void);
@@ -48,6 +59,31 @@ void		client_signal(int, short, void *);
 void		client_callback(int, short, void *);
 int		client_dispatch_attached(void);
 int		client_dispatch_wait(void *);
+const char     *client_exit_message(void);
+
+/*
+ * Get server create lock. If already held then server start is happening in
+ * another client, so block until the lock is released and return -1 to
+ * retry. Ignore other errors - just continue and start the server without the
+ * lock.
+ */
+int
+client_get_lock(char *lockfile)
+{
+	int lockfd;
+
+	if ((lockfd = open(lockfile, O_WRONLY|O_CREAT, 0600)) == -1)
+		fatal("open failed");
+
+	if (flock(lockfd, LOCK_EX|LOCK_NB) == -1 && errno == EWOULDBLOCK) {
+		while (flock(lockfd, LOCK_EX) == -1 && errno == EINTR)
+			/* nothing */;
+		close(lockfd);
+		return (-1);
+	}
+
+	return (lockfd);
+}
 
 /* Connect client to server. */
 int
@@ -55,7 +91,8 @@ client_connect(char *path, int start_server)
 {
 	struct sockaddr_un	sa;
 	size_t			size;
-	int			fd;
+	int			fd, lockfd;
+	char		       *lockfile;
 
 	memset(&sa, 0, sizeof sa);
 	sa.sun_family = AF_UNIX;
@@ -65,24 +102,25 @@ client_connect(char *path, int start_server)
 		return (-1);
 	}
 
+retry:
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("socket failed");
 
 	if (connect(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1) {
+		if (errno != ECONNREFUSED && errno != ENOENT)
+			goto failed;
 		if (!start_server)
 			goto failed;
-		switch (errno) {
-		case ECONNREFUSED:
-			if (unlink(path) != 0)
-				goto failed;
-			/* FALLTHROUGH */
-		case ENOENT:
-			if ((fd = server_start()) == -1)
-				goto failed;
-			break;
-		default:
-			goto failed;
-		}
+		close(fd);
+
+		xasprintf(&lockfile, "%s.lock", path);
+		if ((lockfd = client_get_lock(lockfile)) == -1)
+			goto retry;
+		if (unlink(path) != 0 && errno != ENOENT)
+			return (-1);
+		fd = server_start(lockfd, lockfile);
+		xfree(lockfile);
+		close(lockfd);
 	}
 
 	setblocking(fd, 0);
@@ -91,6 +129,31 @@ client_connect(char *path, int start_server)
 failed:
 	close(fd);
 	return (-1);
+}
+
+/* Get exit string from reason number. */
+const char *
+client_exit_message(void)
+{
+	switch (client_exitreason) {
+	case CLIENT_EXIT_NONE:
+		break;
+	case CLIENT_EXIT_DETACHED:
+		return ("detached");
+	case CLIENT_EXIT_DETACHED_HUP:
+		return ("detached and SIGHUP");
+	case CLIENT_EXIT_LOST_TTY:
+		return ("lost tty");
+	case CLIENT_EXIT_TERMINATED:
+		return ("terminated");
+	case CLIENT_EXIT_LOST_SERVER:
+		return ("lost server");
+	case CLIENT_EXIT_EXITED:
+		return ("exited");
+	case CLIENT_EXIT_SERVER_EXITED:
+		return ("server exited");
+	}
+	return ("unknown reason");
 }
 
 /* Client main loop. */
@@ -142,7 +205,8 @@ client_main(int argc, char **argv, int flags)
 	 * if the socket path matches $TMUX, this is probably the same server.
 	 */
 	if (shell_cmd == NULL && environ_path != NULL &&
-	    cmdflags & CMD_CANTNEST && strcmp(socket_path, environ_path) == 0) {
+	    (cmdflags & CMD_CANTNEST) &&
+	    strcmp(socket_path, environ_path) == 0) {
 		log_warnx("sessions should be nested with care. "
 		    "unset $TMUX to force.");
 		return (1);
@@ -197,8 +261,8 @@ client_main(int argc, char **argv, int flags)
 
 	/* Print the exit message, if any, and exit. */
 	if (client_attached) {
-		if (client_exitmsg != NULL && !login_shell)
-			printf("[%s]\n", client_exitmsg);
+		if (client_exitreason != CLIENT_EXIT_NONE && !login_shell)
+			printf("[%s]\n", client_exit_message());
 
 		ppid = getppid();
 		if (client_exittype == MSG_DETACHKILL && ppid > 1)
@@ -225,11 +289,6 @@ client_send_identify(int flags)
 	    strlcpy(data.term, term, sizeof data.term) >= sizeof data.term)
 		*data.term = '\0';
 
-	if ((fd = dup(STDIN_FILENO)) == -1)
-		fatal("dup failed");
-	imsg_compose(&client_ibuf,
-	    MSG_IDENTIFY, PROTOCOL_VERSION, -1, fd, &data, sizeof data);
-
 	if ((fd = dup(STDOUT_FILENO)) == -1)
 		fatal("dup failed");
 	imsg_compose(&client_ibuf,
@@ -239,6 +298,11 @@ client_send_identify(int flags)
 		fatal("dup failed");
 	imsg_compose(&client_ibuf,
 	    MSG_STDERR, PROTOCOL_VERSION, -1, fd, NULL, 0);
+
+	if ((fd = dup(STDIN_FILENO)) == -1)
+		fatal("dup failed");
+	imsg_compose(&client_ibuf,
+	    MSG_IDENTIFY, PROTOCOL_VERSION, -1, fd, &data, sizeof data);
 }
 
 /* Forward entire environment to server. */
@@ -297,12 +361,12 @@ client_signal(int sig, unused short events, unused void *data)
 	} else {
 		switch (sig) {
 		case SIGHUP:
-			client_exitmsg = "lost tty";
+			client_exitreason = CLIENT_EXIT_LOST_TTY;
 			client_exitval = 1;
 			client_write_server(MSG_EXITING, NULL, 0);
 			break;
 		case SIGTERM:
-			client_exitmsg = "terminated";
+			client_exitreason = CLIENT_EXIT_TERMINATED;
 			client_exitval = 1;
 			client_write_server(MSG_EXITING, NULL, 0);
 			break;
@@ -354,7 +418,7 @@ client_callback(unused int fd, short events, void *data)
 	return;
 
 lost_server:
-	client_exitmsg = "lost server";
+	client_exitreason = CLIENT_EXIT_LOST_SERVER;
 	client_exitval = 1;
 	event_loopexit(NULL);
 }
@@ -451,9 +515,9 @@ client_dispatch_attached(void)
 
 			client_exittype = imsg.hdr.type;
 			if (imsg.hdr.type == MSG_DETACHKILL)
-				client_exitmsg = "detached and SIGHUP";
+				client_exitreason = CLIENT_EXIT_DETACHED_HUP;
 			else
-				client_exitmsg = "detached";
+				client_exitreason = CLIENT_EXIT_DETACHED;
 			client_write_server(MSG_EXITING, NULL, 0);
 			break;
 		case MSG_EXIT:
@@ -462,7 +526,7 @@ client_dispatch_attached(void)
 				fatalx("bad MSG_EXIT size");
 
 			client_write_server(MSG_EXITING, NULL, 0);
-			client_exitmsg = "exited";
+			client_exitreason = CLIENT_EXIT_EXITED;
 			break;
 		case MSG_EXITED:
 			if (datalen != 0)
@@ -475,7 +539,7 @@ client_dispatch_attached(void)
 				fatalx("bad MSG_SHUTDOWN size");
 
 			client_write_server(MSG_EXITING, NULL, 0);
-			client_exitmsg = "server exited";
+			client_exitreason = CLIENT_EXIT_SERVER_EXITED;
 			client_exitval = 1;
 			break;
 		case MSG_SUSPEND:

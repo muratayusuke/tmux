@@ -217,8 +217,7 @@ cmd_new_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 	if (cmd != NULL && args_has(args, 'n')) {
 		w = s->curw->window;
 
-		xfree(w->name);
-		w->name = xstrdup(args_get(args, 'n'));
+		window_set_name(w, args_get(args, 'n'));
 
 		options_set_number(&w->options, "automatic-rename", 0);
 	}
@@ -245,6 +244,7 @@ cmd_new_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 			if (old_s != NULL)
 				ctx->cmdclient->last_session = old_s;
 			ctx->cmdclient->session = s;
+			notify_attached_session_changed(ctx->cmdclient);
 			session_update_activity(s);
 			server_redraw_client(ctx->cmdclient);
 		} else {
@@ -252,6 +252,7 @@ cmd_new_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 			if (old_s != NULL)
 				ctx->curclient->last_session = old_s;
 			ctx->curclient->session = s;
+			notify_attached_session_changed(ctx->curclient);
 			session_update_activity(s);
 			server_redraw_client(ctx->curclient);
 		}

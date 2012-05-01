@@ -30,8 +30,8 @@ int	cmd_break_pane_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_break_pane_entry = {
 	"break-pane", "breakp",
-	"dt:", 0, 0,
-	"[-d] " CMD_TARGET_PANE_USAGE,
+	"dPF:t:", 0, 0,
+	"[-dP] [-F format] " CMD_TARGET_PANE_USAGE,
 	0,
 	NULL,
 	NULL,
@@ -46,8 +46,13 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_ctx *ctx)
 	struct session		*s;
 	struct window_pane	*wp;
 	struct window		*w;
+	char			*name;
 	char			*cause;
 	int			 base_idx;
+	struct client		*c;
+	struct format_tree	*ft;
+	const char		*template;
+	char			*cp;
 
 	if ((wl = cmd_find_pane(ctx, args_get(args, 't'), &s, &wp)) == NULL)
 		return (-1);
@@ -74,7 +79,9 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_ctx *ctx)
 	w = wp->window = window_create1(s->sx, s->sy);
 	TAILQ_INSERT_HEAD(&w->panes, wp, entry);
 	w->active = wp;
-	w->name = default_window_name(w);
+	name = default_window_name(w);
+	window_set_name(w, name);
+	xfree(name);
 	layout_init(w);
 
 	base_idx = options_get_number(&s->options, "base-index");
@@ -85,5 +92,22 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_ctx *ctx)
 	server_redraw_session(s);
 	server_status_session_group(s);
 
+	if (args_has(args, 'P')) {
+		template = "#{session_name}:#{window_index}";
+		if (args_has(args, 'F'))
+			template = args_get(args, 'F');
+		ft = format_create();
+		if ((c = cmd_find_client(ctx, NULL)) != NULL)
+			format_client(ft, c);
+		format_session(ft, s);
+		format_winlink(ft, s, wl);
+		format_window_pane(ft, wp);
+
+		cp = format_expand(ft, template);
+		ctx->print(ctx, "%s", cp);
+		xfree(cp);
+
+		format_free(ft);
+	}
 	return (0);
 }

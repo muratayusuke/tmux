@@ -60,6 +60,20 @@ status_out_cmp(struct status_out *so1, struct status_out *so2)
 	return (strcmp(so1->cmd, so2->cmd));
 }
 
+/* Get screen line of status line. -1 means off. */
+int
+status_at_line(struct client *c)
+{
+	struct session	*s = c->session;
+
+	if (!options_get_number(&s->options, "status"))
+		return (-1);
+
+	if (options_get_number(&s->options, "status-position") == 0)
+		return (0);
+	return (c->tty.sy - 1);
+}
+
 /* Retrieve options for left string. */
 char *
 status_redraw_get_left(struct client *c,
@@ -127,7 +141,7 @@ status_set_window_at(struct client *c, u_int x)
 	struct session	*s = c->session;
 	struct winlink	*wl;
 
-	x += s->wlmouse;
+	x += c->wlmouse;
 	RB_FOREACH(wl, winlinks, &s->windows) {
 		if (x < wl->status_width &&
 			session_select(s, wl->idx) == 0) {
@@ -146,11 +160,12 @@ status_redraw(struct client *c)
 	struct winlink	       *wl;
 	struct screen		old_status, window_list;
 	struct grid_cell	stdgc, lgc, rgc, gc;
+	struct options	       *oo;
 	time_t			t;
-	char		       *left, *right;
+	char		       *left, *right, *sep;
 	u_int			offset, needed;
 	u_int			wlstart, wlwidth, wlavailable, wloffset, wlsize;
-	size_t			llen, rlen;
+	size_t			llen, rlen, seplen;
 	int			larrow, rarrow, utf8flag;
 
 	/* No status line? */
@@ -216,7 +231,11 @@ status_redraw(struct client *c)
 
 		if (wl == s->curw)
 			wloffset = wlwidth;
-		wlwidth += wl->status_width + 1;
+
+		oo = &wl->window->options;
+		sep = options_get_string(oo, "window-status-separator");
+		seplen = screen_write_strlen(utf8flag, "%s", sep);
+		wlwidth += wl->status_width + seplen;
 	}
 
 	/* Create a new screen for the window list. */
@@ -227,7 +246,10 @@ status_redraw(struct client *c)
 	RB_FOREACH(wl, winlinks, &s->windows) {
 		screen_write_cnputs(&ctx,
 		    -1, &wl->status_cell, utf8flag, "%s", wl->status_text);
-		screen_write_putc(&ctx, &stdgc, ' ');
+
+		oo = &wl->window->options;
+		sep = options_get_string(oo, "window-status-separator");
+		screen_write_nputs(&ctx, -1, &stdgc, utf8flag, "%s", sep);
 	}
 	screen_write_stop(&ctx);
 
@@ -342,7 +364,7 @@ draw:
 		wloffset++;
 
 	/* Copy the window list. */
-	s->wlmouse = -wloffset + wlstart;
+	c->wlmouse = -wloffset + wlstart;
 	screen_write_cursormove(&ctx, wloffset, 0);
 	screen_write_copy(&ctx, &window_list, wlstart, 0, wlwidth, 1);
 	screen_free(&window_list);
@@ -462,12 +484,13 @@ do_replace:
 		ptrlen = limit;
 
 	if (*optr + ptrlen >= out + outsize - 1)
-		return;
+		goto out;
 	while (ptrlen > 0 && *ptr != '\0') {
 		*(*optr)++ = *ptr++;
 		ptrlen--;
 	}
 
+out:
 	if (freeptr != NULL)
 		xfree(freeptr);
 	return;
@@ -490,9 +513,10 @@ status_replace(struct client *c, struct session *s, struct winlink *wl,
 {
 	static char	out[BUFSIZ];
 	char		in[BUFSIZ], ch, *iptr, *optr;
+	size_t		len;
 
-	strftime(in, sizeof in, fmt, localtime(&t));
-	in[(sizeof in) - 1] = '\0';
+	len = strftime(in, sizeof in, fmt, localtime(&t));
+	in[len] = '\0';
 
 	iptr = in;
 	optr = out;
@@ -760,7 +784,8 @@ status_message_set(struct client *c, const char *fmt, ...)
 	tv.tv_sec = delay / 1000;
 	tv.tv_usec = (delay % 1000) * 1000L;
 
-	evtimer_del(&c->message_timer);
+	if (event_initialized (&c->message_timer))
+		evtimer_del(&c->message_timer);
 	evtimer_set(&c->message_timer, status_message_callback, c);
 	evtimer_add(&c->message_timer, &tv);
 
@@ -1022,12 +1047,18 @@ status_prompt_key(struct client *c, int key)
 			c->flags |= CLIENT_STATUS;
 		}
 		break;
+	case MODEKEYEDIT_SWITCHMODEBEGINLINE:
+		c->flags |= CLIENT_STATUS;
+		/* FALLTHROUGH */
 	case MODEKEYEDIT_STARTOFLINE:
 		if (c->prompt_index != 0) {
 			c->prompt_index = 0;
 			c->flags |= CLIENT_STATUS;
 		}
 		break;
+	case MODEKEYEDIT_SWITCHMODEAPPENDLINE:
+		c->flags |= CLIENT_STATUS;
+		/* FALLTHROUGH */
 	case MODEKEYEDIT_ENDOFLINE:
 		if (c->prompt_index != size) {
 			c->prompt_index = size;
